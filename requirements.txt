@@ -1,0 +1,4 @@
+fitz
+requests
+google-cloud-bigquery
+gemini
