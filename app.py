@@ -1,157 +1,144 @@
+import os
+from PyPDF2 import PdfReader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 import streamlit as st
-import fitz 
-import requests
-from google.cloud import bigquery
-from langchain.llms import Gemini
-from langchain.chains import FactChecker
+import google.generativeai as genai
+from langchain.vectorstores import FAISS
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.chains.question_answering import load_qa_chain
+from langchain.prompts import PromptTemplate
+from dotenv import load_dotenv
 
-# Initialize BigQuery client
-client = bigquery.Client()
+load_dotenv()
+os.getenv("GOOGLE_API_KEY")
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
-# Function to extract text from PDF
-def extract_text_from_pdf(file):
-    doc = fitz.open(stream=file.read(), filetype="pdf")
+# read all pdf files and return text
+
+
+def get_pdf_text(pdf_docs):
     text = ""
-    for page in doc:
-        text += page.get_text()
+    for pdf in pdf_docs:
+        pdf_reader = PdfReader(pdf)
+        for page in pdf_reader.pages:
+            text += page.extract_text()
     return text
 
-# Function to call the Gemini API for summarization
-def summarize_text_with_gemini(text):
-    url = "https://api.gemini.com/v1/summarize"
-    headers = {
-        "Authorization": "Bearer YOUR_API_KEY",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "text": text
-    }
-    response = requests.post(url, headers=headers, json=payload)
-    if response.status_code == 200:
-        return response.json()["summary"]
-    else:
-        st.error("Failed to summarize the text")
-        return None
+# split text into chunks
 
-# Function to call the Gemini API for Q&A generation
-def generate_qa_with_gemini(text):
-    url = "https://api.gemini.com/v1/generate_qa"
-    headers = {
-        "Authorization": "Bearer YOUR_API_KEY",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "text": text
-    }
-    response = requests.post(url, headers=headers, json=payload)
-    if response.status_code == 200:
-        return response.json()["qa_pairs"]
-    else:
-        st.error("Failed to generate Q&A pairs")
-        return None
 
-# Function to call the Gemini API for personalized learning recommendations and resources
-def get_recommendations_with_gemini(user_profile):
-    url = "https://api.gemini.com/v1/recommendations"
-    headers = {
-        "Authorization": "Bearer YOUR_API_KEY",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "profile": user_profile
-    }
-    response = requests.post(url, headers=headers, json=payload)
-    if response.status_code == 200:
-        return response.json()
-    else:
-        st.error("Failed to fetch recommendations")
-        return None
+def get_text_chunks(text):
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=10000, chunk_overlap=1000)
+    chunks = splitter.split_text(text)
+    return chunks  # list of strings
 
-# Function to perform fact-checking using BigQuery and LangChain
-def fact_check_with_bigquery(text):
-    query = f"""
-    SELECT fact, source
-    FROM `your_project.your_dataset.your_table`
-    WHERE CONTAINS_SUBSTR('{text}', fact)
+# get embeddings for each chunk
+
+
+def get_vector_store(chunks):
+    embeddings = GoogleGenerativeAIEmbeddings(
+        model="models/embedding-001")  # type: ignore
+    vector_store = FAISS.from_texts(chunks, embedding=embeddings)
+    vector_store.save_local("faiss_index")
+
+
+def get_conversational_chain():
+    prompt_template = """
+    Answer the question as detailed as possible from the provided context, make sure to provide all the details, if the answer is not in
+    provided context just say, "answer is not available in the context", don't provide the wrong answer\n\n
+    Context:\n {context}?\n
+    Question: \n{question}\n
+
+    Answer:
     """
-    query_job = client.query(query)
-    results = query_job.result()
-    facts = []
-    for row in results:
-        facts.append({"fact": row.fact, "source": row.source})
-    return facts
 
-# Streamlit application
-st.title("LearnSphere")
+    model = ChatGoogleGenerativeAI(model="gemini-pro",
+                                   client=genai,
+                                   temperature=0.3,
+                                   )
+    prompt = PromptTemplate(template=prompt_template,
+                            input_variables=["context", "question"])
+    chain = load_qa_chain(llm=model, chain_type="stuff", prompt=prompt)
+    return chain
 
-uploaded_file = st.file_uploader("Upload a PDF file", type=["pdf"])
 
-if uploaded_file:
-    st.write("Extracting text from PDF...")
-    pdf_text = extract_text_from_pdf(uploaded_file)
-    st.write("Text extracted successfully!")
+def clear_chat_history():
+    st.session_state.messages = [
+        {"role": "assistant", "content": "upload some pdfs and ask me a question"}]
 
-    st.subheader("Summary")
-    summary = summarize_text_with_gemini(pdf_text)
-    if summary:
-        st.write(summary)
 
-    st.subheader("Question and Answer")
-    qa_pairs = generate_qa_with_gemini(pdf_text)
-    if qa_pairs:
-        for qa in qa_pairs:
-            st.write(f"**Question:** {qa['question']}")
-            st.write(f"**Answer:** {qa['answer']}")
+def user_input(user_question):
+    embeddings = GoogleGenerativeAIEmbeddings(
+        model="models/embedding-001")  # type: ignore
 
-    st.subheader("Take a Quiz")
-    quiz_questions = [
-        {"question": "What is the main topic of the document?", "options": ["Option 1", "Option 2", "Option 3"], "correct": 0},
-        {"question": "Explain the key points.", "options": ["Option 1", "Option 2", "Option 3"], "correct": 1},
-    ]
+    new_db = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True) 
+    docs = new_db.similarity_search(user_question)
 
-    user_answers = []
-    for idx, q in enumerate(quiz_questions):
-        st.write(q["question"])
-        options = q["options"]
-        user_answers.append(st.radio(f"Select an answer for question {idx + 1}", options, key=f"quiz_{idx}"))
+    chain = get_conversational_chain()
 
-    if st.button("Submit Quiz"):
-        correct_answers = 0
-        for idx, answer in enumerate(user_answers):
-            if answer == quiz_questions[idx]["options"][quiz_questions[idx]["correct"]]:
-                correct_answers += 1
-        
-        st.write(f"You got {correct_answers} out of {len(quiz_questions)} correct!")
+    response = chain(
+        {"input_documents": docs, "question": user_question}, return_only_outputs=True, )
 
-        st.subheader("Tell us about your learning preferences")
-        learning_preferences = st.multiselect(
-            "Select your learning preferences",
-            ["Visual", "Auditory", "Reading/Writing", "Kinesthetic"]
-        )
+    print(response)
+    return response
 
-        user_profile = {
-            "name": "John Doe",
-            "quiz_score": correct_answers,
-            "total_questions": len(quiz_questions),
-            "learning_preferences": learning_preferences
-        }
 
-        recommendations = get_recommendations_with_gemini(user_profile)
-        if recommendations:
-            st.write("Based on your quiz results and preferences, we recommend:")
-            for recommendation in recommendations.get("recommendations", []):
-                st.write(f"- {recommendation['description']}")
+def main():
+    st.set_page_config(
+        page_title="Gemini PDF Chatbot",
+        page_icon="🤖"
+    )
 
-            st.write("Here are some learning resources for you:")
-            for resource in recommendations.get("resources", []):
-                st.write(f"- [{resource['title']}]({resource['link']})")
+    # Sidebar for uploading PDF files
+    with st.sidebar:
+        st.title("Menu:")
+        pdf_docs = st.file_uploader(
+            "Upload your PDF Files and Click on the Submit & Process Button", accept_multiple_files=True)
+        if st.button("Submit & Process"):
+            with st.spinner("Processing..."):
+                raw_text = get_pdf_text(pdf_docs)
+                text_chunks = get_text_chunks(raw_text)
+                get_vector_store(text_chunks)
+                st.success("Done")
 
-    st.subheader("Fact Checker")
-    if st.button("Check Facts"):
-        facts = fact_check_with_bigquery(pdf_text)
-        if facts:
-            st.write("Found the following facts in the document:")
-            for fact in facts:
-                st.write(f"- **Fact:** {fact['fact']} | **Source:** {fact['source']}")
-        else:
-            st.write("No facts found in the document.")
+    # Main content area for displaying chat messages
+    st.title("Chat with PDF files using Gemini🤖")
+    st.write("Welcome to the chat!")
+    st.sidebar.button('Clear Chat History', on_click=clear_chat_history)
+
+    # Chat input
+    # Placeholder for chat messages
+
+    if "messages" not in st.session_state.keys():
+        st.session_state.messages = [
+            {"role": "assistant", "content": "upload some pdfs and ask me a question"}]
+
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.write(message["content"])
+
+    if prompt := st.chat_input():
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.write(prompt)
+
+    # Display chat messages and bot response
+    if st.session_state.messages[-1]["role"] != "assistant":
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                response = user_input(prompt)
+                placeholder = st.empty()
+                full_response = ''
+                for item in response['output_text']:
+                    full_response += item
+                    placeholder.markdown(full_response)
+                placeholder.markdown(full_response)
+        if response is not None:
+            message = {"role": "assistant", "content": full_response}
+            st.session_state.messages.append(message)
+
+
+if __name__ == "__main__":
+    main()
