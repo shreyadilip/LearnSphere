@@ -87,8 +87,8 @@ def user_input(user_question):
 
 def main():
     st.set_page_config(
-        page_title="Gemini PDF Chatbot",
-        page_icon="🤖"
+        page_title="LearnSphere",
+
     )
 
     # Sidebar for uploading PDF files
@@ -104,7 +104,7 @@ def main():
                 st.success("Done")
 
     # Main content area for displaying chat messages
-    st.title("Chat with PDF files using Gemini🤖")
+    st.title("Q & A with your PDF files using Gemini")
     st.write("Welcome to the chat!")
     st.sidebar.button('Clear Chat History', on_click=clear_chat_history)
 
