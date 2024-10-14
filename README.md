@@ -9,7 +9,8 @@ LearnSphere is an smart study companion that lets students query and summarize d
  - Frontend: Built using Streamlit, allowing users to interact with the chatbot, upload documents, and view responses.
  - Backend: Handles PDF processing, text chunking, embedding generation, and query answering using AI models.
  - Storage: Uses FAISS for storing and retrieving document embeddings.
-# Rationale Behind the Design
+   
+## Rationale Behind the Design
 - Streamlit: Provides a simple way to create interactive web applications.
 - FAISS: Efficiently handles vector storage and similarity search.
 - AI Models: Utilize Google’s Gemini for natural language understanding and document processing.
